@@ -6,7 +6,7 @@ from typing import List
 import streamlit as st
 
 import bio_hippocampal_snn_ctx_theta_cmp_feedback_ctxlearn_hardgate as hippo
-from book_ingestion_vsa_adapter import (
+from book_ingestion_vsa_adapter_plus import (
     BookAdapter,
     LearningEvent,
     SentenceEvent,
