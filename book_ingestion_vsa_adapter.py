@@ -11,7 +11,7 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional
+from typing import Callable, Dict, List, Tuple, Optional
 
 # >>> PASSE DIES AN: Name deines Hippocampus-Moduls
 import bio_hippocampal_snn_ctx_theta_cmp_feedback_ctxlearn_hardgate as hippo
@@ -305,6 +305,34 @@ class SequenceController:
 # ==============================
 
 @dataclass
+class SentenceEvent:
+    text: str
+    dg_activations: int
+
+
+@dataclass
+class LearningEvent:
+    chapter_index: int
+    paragraph_index: int
+    sentences: List[SentenceEvent]
+    ctx_ids: List[int]
+    coherence: float
+    reward: float
+    engram_tag: str
+    engram_size: int
+    engrams_total: int
+    replay_temp: float
+    hard_gate_active: bool
+    ca3_active: int
+    ca1_active: int
+    ca3_feedback_gate: float
+    ca1_feedback_gate: float
+    ca3_growth_events: int
+    ca1_growth_events: int
+    avg_ca1_mismatch: float
+
+
+@dataclass
 class BookAdapter:
     system: hippo.HippocampalSystem
     vsa: VSA = field(default_factory=lambda: VSA(dim=1024, rng_seed=42))
@@ -325,8 +353,9 @@ class BookAdapter:
         if self.seqctl is None: self.seqctl = SequenceController(self.vsa, self.cortex)
 
     # --- Kern: einen Satz einspeisen ---
-    def _stimulate_sentence(self, enc: EncodedSentence, ctx_ids: List[int], ticks_after: int = 6) -> None:
-        dg_ids = self.projector.to_dg_ids(enc.sent_vec)
+    def _stimulate_sentence(self, enc: EncodedSentence, ctx_ids: List[int], ticks_after: int = 6, dg_ids: Optional[List[int]] = None) -> List[int]:
+        if dg_ids is None:
+            dg_ids = self.projector.to_dg_ids(enc.sent_vec)
         # Kontext aktivieren (Ctx → Plastizität)
         self.system.deliver(hippo.Event(hippo.EventKind.CTX, data={"ctx_ids": ctx_ids}))
         # DG stimulieren (Satz)
@@ -334,6 +363,7 @@ class BookAdapter:
         # ein paar freie Schritte zur Rekurrenz/Plastik
         for _ in range(ticks_after):
             self.system.deliver(hippo.Event(hippo.EventKind.TICK))
+        return dg_ids
 
     # --- Mismatch/Kohärenz → Comparator-Feedback (ergänzend) ---
     def _coherence_to_reward(self, coherence: float) -> float:
@@ -341,18 +371,25 @@ class BookAdapter:
         return max(0.0, (coherence - 0.5)) * 0.6
 
     # --- Hauptpipeline ---
-    def ingest_book(self, text: str, chapter_size_sents: int = 40, para_size_sents: int = 6) -> None:
+    def split_book(self, text: str, chapter_size_sents: int = 40, para_size_sents: int = 6) -> Tuple[List[str], List[List[str]], List[List[List[str]]]]:
         sentences = self.encoder.to_sentences(text)
         if not sentences:
-            return
-        # chunking in Absätze/Kapitel
+            return [], [], []
         paras: List[List[str]] = []
         for i in range(0, len(sentences), para_size_sents):
             paras.append(sentences[i:i+para_size_sents])
 
+        chapter_span = max(1, chapter_size_sents // max(1, para_size_sents))
         chapters: List[List[List[str]]] = []
-        for i in range(0, len(paras), max(1, chapter_size_sents // para_size_sents)):
-            chapters.append(paras[i:i + max(1, chapter_size_sents // para_size_sents)])
+        for i in range(0, len(paras), chapter_span):
+            chapters.append(paras[i:i + chapter_span])
+        return sentences, paras, chapters
+
+    def ingest_book(self, text: str, chapter_size_sents: int = 40, para_size_sents: int = 6,
+                    progress_cb: Optional[Callable[[LearningEvent], None]] = None) -> None:
+        sentences, paras, chapters = self.split_book(text, chapter_size_sents, para_size_sents)
+        if not sentences:
+            return
 
         # pro Kapitel
         for ci, chapter in enumerate(chapters):
@@ -360,13 +397,15 @@ class BookAdapter:
             for pi, para in enumerate(chapter):
                 ctx_ids = self.projector.context_ids(ci, pi)
                 sent_vecs = []
+                sent_events: List[SentenceEvent] = []
                 for sent in para:
                     enc = self.encoder.encode_sentence(sent)
                     sent_vecs.append(enc.sent_vec)
                     # Relationsnetz updaten
                     self.cortex.add_triples(enc.triples, sent)
-                    # Satz einspeisen
-                    self._stimulate_sentence(enc, ctx_ids, ticks_after=6)
+                    # Satz einspeisen und Report sammeln
+                    dg_ids = self._stimulate_sentence(enc, ctx_ids, ticks_after=6)
+                    sent_events.append(SentenceEvent(text=sent, dg_activations=len(dg_ids)))
                 # Absatz-Zeiger erzeugen und im Cortex ablegen
                 para_vec = self.seqctl.chain_sentences(sent_vecs)
                 self.cortex.add_vector(f"CH{ci}-P{pi}", para_vec)
@@ -381,6 +420,30 @@ class BookAdapter:
                 rew = self._coherence_to_reward(coh)
                 if rew > 0:
                     self.system.deliver(hippo.Event(hippo.EventKind.REWARD, data={"magnitude": rew}))
+
+                if progress_cb is not None:
+                    avg_mismatch = (sum(self.system.ca1_last_mismatch) /
+                                    max(1, len(self.system.ca1_last_mismatch)))
+                    progress_cb(LearningEvent(
+                        chapter_index=ci,
+                        paragraph_index=pi,
+                        sentences=sent_events,
+                        ctx_ids=ctx_ids,
+                        coherence=coh,
+                        reward=rew,
+                        engram_tag=f"CH{ci}-P{pi}",
+                        engram_size=len(dg_para),
+                        engrams_total=len(self.system.engrams),
+                        replay_temp=self.system.replay_temp,
+                        hard_gate_active=self.system.hard_gate_countdown > 0,
+                        ca3_active=len(self.system.CA3.active_exc_ids()),
+                        ca1_active=len(self.system.CA1.active_exc_ids()),
+                        ca3_feedback_gate=self.system.CA3.feedback_plasticity_gate,
+                        ca1_feedback_gate=self.system.CA1.feedback_plasticity_gate,
+                        ca3_growth_events=self.system.CA3.grown_count,
+                        ca1_growth_events=self.system.CA1.grown_count,
+                        avg_ca1_mismatch=avg_mismatch,
+                    ))
 
             # Kapitel-Zeiger
             chap_vec = self.seqctl.chain_paragraphs(para_vecs)
