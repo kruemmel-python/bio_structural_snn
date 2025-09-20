@@ -212,24 +212,34 @@ def _render_metrics() -> None:
         if metrics_history:
             df = pd.DataFrame(metrics_history).set_index("step")
             st.line_chart(df[["coherence", "mismatch"]])
+            if "familiarity" in df.columns:
+                st.line_chart(df[["familiarity"]])
             st.line_chart(df[["replay_temp", "hard_gate"]])
             st.bar_chart(df[["engrams"]])
             st.dataframe(df, use_container_width=True)
         else:
             st.write("Noch keine Metriken – starte das Training.")
         if adapter and adapter.metrics.steps:
-            cols = st.columns(3)
+            cols = st.columns(4)
             last_idx = -1
             cols[0].metric("Schritt", adapter.metrics.steps[last_idx])
             cols[1].metric("Kohärenz", f"{adapter.metrics.coherence[last_idx]:.4f}")
             cols[2].metric("Mismatch", f"{adapter.metrics.mismatch[last_idx]:.4f}")
-            st.write(f"Engramme: {adapter.metrics.engrams[last_idx]} | Replay-T: {adapter.metrics.replay_T[last_idx]:.3f} | Hard-Gate: {adapter.metrics.hardgate[last_idx]}")
+            cols[3].metric("Familiarität", f"{adapter.metrics.familiarity[last_idx]:.4f}")
+            st.write(
+                "Engramme: "
+                f"{adapter.metrics.engrams[last_idx]} | "
+                f"Replay-T: {adapter.metrics.replay_T[last_idx]:.3f} | "
+                f"Hard-Gate: {adapter.metrics.hardgate[last_idx]}"
+            )
             ascii_cols = st.columns(2)
             ascii_cols[0].code(ascii_plot(adapter.metrics.coherence, label="Kohärenz", width=48, height=8))
             ascii_cols[0].code(ascii_plot(adapter.metrics.mismatch, label="CA1-Mismatch", width=48, height=8))
             ascii_cols[1].code(ascii_plot([float(x) for x in adapter.metrics.engrams], label="#Engramme", width=48, height=8))
             ascii_cols[1].code(ascii_plot(adapter.metrics.replay_T, label="Replay-Temp", width=48, height=8))
-            st.code(ascii_plot([float(x) for x in adapter.metrics.hardgate], label="Hard-Gate", width=72, height=8))
+            ascii_cols_extra = st.columns(2)
+            ascii_cols_extra[0].code(ascii_plot([float(x) for x in adapter.metrics.hardgate], label="Hard-Gate", width=48, height=8))
+            ascii_cols_extra[1].code(ascii_plot(adapter.metrics.familiarity, label="Familiarität", width=48, height=8))
             csv_text = adapter.metrics.to_csv_text()
             st.download_button(
                 "📥 Metriken als CSV herunterladen",

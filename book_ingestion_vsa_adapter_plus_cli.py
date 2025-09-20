@@ -87,29 +87,38 @@ class MetricsLogger:
     engrams:   List[int]   = field(default_factory=list)
     replay_T:  List[float] = field(default_factory=list)
     hardgate:  List[int]   = field(default_factory=list)
+    familiarity: List[float] = field(default_factory=list)
     steps:     List[int]   = field(default_factory=list)
 
-    def log(self, step: int, coh: float, mis: float, eng: int, temp: float, hg: int) -> None:
+    def log(self, step: int, coh: float, mis: float, eng: int, temp: float, hg: int, fam: float) -> None:
         self.steps.append(step)
         self.coherence.append(coh)
         self.mismatch.append(mis)
         self.engrams.append(eng)
         self.replay_T.append(temp)
         self.hardgate.append(hg)
+        self.familiarity.append(fam)
 
     def to_csv(self, path: str) -> None:
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["step","coherence","mismatch","engrams","replay_temp","hard_gate"])
+            w.writerow(["step","coherence","mismatch","engrams","replay_temp","hard_gate","familiarity"])
             for i in range(len(self.steps)):
-                w.writerow([self.steps[i], f"{self.coherence[i]:.6f}", f"{self.mismatch[i]:.6f}",
-                            self.engrams[i], f"{self.replay_T[i]:.6f}", self.hardgate[i]])
+                w.writerow([
+                    self.steps[i],
+                    f"{self.coherence[i]:.6f}",
+                    f"{self.mismatch[i]:.6f}",
+                    self.engrams[i],
+                    f"{self.replay_T[i]:.6f}",
+                    self.hardgate[i],
+                    f"{self.familiarity[i]:.6f}",
+                ])
 
     def to_csv_text(self) -> str:
         """Liefert identische CSV-Daten als String (für Downloads)."""
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["step","coherence","mismatch","engrams","replay_temp","hard_gate"])
+        w.writerow(["step","coherence","mismatch","engrams","replay_temp","hard_gate","familiarity"])
         for i in range(len(self.steps)):
             w.writerow([
                 self.steps[i],
@@ -118,22 +127,24 @@ class MetricsLogger:
                 self.engrams[i],
                 f"{self.replay_T[i]:.6f}",
                 self.hardgate[i],
+                f"{self.familiarity[i]:.6f}",
             ])
         return buf.getvalue()
 
     def as_dicts(self) -> List[Dict[str, float]]:
         rows: List[Dict[str, float]] = []
         for i in range(len(self.steps)):
-            rows.append(
-                {
-                    "step": self.steps[i],
-                    "coherence": self.coherence[i],
-                    "mismatch": self.mismatch[i],
-                    "engrams": self.engrams[i],
-                    "replay_temp": self.replay_T[i],
-                    "hard_gate": self.hardgate[i],
-                }
-            )
+                rows.append(
+                    {
+                        "step": self.steps[i],
+                        "coherence": self.coherence[i],
+                        "mismatch": self.mismatch[i],
+                        "engrams": self.engrams[i],
+                        "replay_temp": self.replay_T[i],
+                        "hard_gate": self.hardgate[i],
+                        "familiarity": self.familiarity[i],
+                    }
+                )
         return rows
 
 # ==============================
@@ -164,7 +175,8 @@ class InstrumentedBookAdapter(adapter_plus.BookAdapter):
         eng = len(self.system.engrams)
         temp = self.system.replay_temp
         hg = self.system.hard_gate_countdown
-        self.metrics.log(self._step_counter, coh, mis, eng, temp, hg)
+        fam = getattr(self.system, "average_familiarity", 0.0)
+        self.metrics.log(self._step_counter, coh, mis, eng, temp, hg, fam)
         if self._metric_callbacks:
             payload = {
                 "step": self.metrics.steps[-1],
@@ -173,6 +185,7 @@ class InstrumentedBookAdapter(adapter_plus.BookAdapter):
                 "engrams": self.metrics.engrams[-1],
                 "replay_temp": self.metrics.replay_T[-1],
                 "hard_gate": self.metrics.hardgate[-1],
+                "familiarity": self.metrics.familiarity[-1],
             }
             for cb in list(self._metric_callbacks):
                 try:
@@ -231,6 +244,10 @@ class InstrumentedBookAdapter(adapter_plus.BookAdapter):
         super().import_state_dict(payload)
         if isinstance(metrics, MetricsLogger):
             self.metrics = metrics
+            current = getattr(self.metrics, "familiarity", [])
+            if len(current) < len(self.metrics.steps):
+                current = list(current) + [0.0 for _ in range(len(self.metrics.steps) - len(current))]
+            self.metrics.familiarity = current
         else:
             self.metrics = MetricsLogger()
         self._step_counter = int(step_counter) if step_counter is not None else 0
@@ -266,6 +283,7 @@ def print_stats(inst: InstrumentedBookAdapter) -> None:
     print(f"Engramme: {m.engrams[i]}")
     print(f"Replay-Temp: {m.replay_T[i]:.2f}")
     print(f"Hard-Gate: {m.hardgate[i]}")
+    print(f"Familiarität: {m.familiarity[i]:.2f}")
 
 def print_plots(inst: InstrumentedBookAdapter) -> None:
     m = inst.metrics
@@ -275,6 +293,7 @@ def print_plots(inst: InstrumentedBookAdapter) -> None:
     print(ascii_plot([float(x) for x in m.engrams], label="#Engramme", width=64, height=8))
     print(ascii_plot(m.replay_T,  label="Replay-Temp", width=64, height=8))
     print(ascii_plot([float(x) for x in m.hardgate], label="Hard-Gate", width=64, height=8))
+    print(ascii_plot(m.familiarity, label="Familiarität", width=64, height=8))
 
 def run_cli(inst: InstrumentedBookAdapter) -> None:
     print("\nInteraktive CLI – tippe 'help' für Hilfe, 'exit' zum Beenden.")

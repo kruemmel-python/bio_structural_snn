@@ -129,12 +129,14 @@ class BookAdapter:
         self._rng = random.Random(1234)
         self._chapter_titles: Dict[int, str] = {}
         self._paragraph_lookup: Dict[str, Paragraph] = {}
+        self._token_mastery: Counter[str] = Counter()
 
         # Ensure the downstream instrumentation always finds the expected fields
         _ensure_attr(self.system, "ca1_last_mismatch", [0.0])
         _ensure_attr(self.system, "engrams", [])
         _ensure_attr(self.system, "replay_temp", 1.0)
         _ensure_attr(self.system, "hard_gate_countdown", 0)
+        _ensure_attr(self.system, "average_familiarity", 0.0)
 
     # ------------------------------------------------------------------
     # High level ingestion API
@@ -160,6 +162,7 @@ class BookAdapter:
             self.system.engrams.clear()
             self.cortex = SimpleCortex()
             self._last_tokens = Counter()
+            self._token_mastery = Counter()
             base_chapter_idx = 0
         else:
             last_ts = (
@@ -212,7 +215,7 @@ class BookAdapter:
                     {
                         "ids": list(range(len(encoded_sentences))),
                         "tag": tag,
-                        "saliency": max(0.05, min(1.0, self.cortex.coherence_score())),
+                        "saliency": self._engram_saliency(),
                         "ts": timestamp,
                     }
                 )
@@ -233,6 +236,7 @@ class BookAdapter:
             "paragraphs": self._paragraphs,
             "chapter_titles": self._chapter_titles,
             "last_tokens": self._last_tokens,
+            "token_mastery": self._token_mastery,
             "rng_state": self._rng.getstate(),
         }
 
@@ -242,6 +246,7 @@ class BookAdapter:
         self._paragraphs = payload.get("paragraphs", [])
         self._chapter_titles = payload.get("chapter_titles", {})
         self._last_tokens = payload.get("last_tokens", Counter())
+        self._token_mastery = payload.get("token_mastery", Counter())
         rng_state = payload.get("rng_state")
         if rng_state is not None:
             self._rng.setstate(rng_state)
@@ -250,6 +255,7 @@ class BookAdapter:
         _ensure_attr(self.system, "engrams", [])
         _ensure_attr(self.system, "replay_temp", 1.0)
         _ensure_attr(self.system, "hard_gate_countdown", 0)
+        _ensure_attr(self.system, "average_familiarity", 0.0)
 
     def export_state_bytes(self) -> bytes:
         return pickle.dumps(self.export_state_dict(), protocol=pickle.HIGHEST_PROTOCOL)
@@ -326,9 +332,14 @@ class BookAdapter:
     def _stimulate_sentence(self, enc: EncodedSentence, ctx_ids: List[int], ticks_after: int = 6) -> None:
         tokens = Counter(enc.tokens)
         self.cortex.observe(enc.tokens)
-        mismatch = 1.0 - _cosine(tokens, self._last_tokens)
+        familiarity = self._sentence_familiarity(enc.tokens)
+        novelty = 1.0 - _cosine(tokens, self._last_tokens)
+        mismatch = novelty * (1.0 - 0.5 * familiarity)
+        mismatch = max(0.0, min(1.0, mismatch))
         self.system.ca1_last_mismatch = [mismatch]
         self._last_tokens = tokens
+        self._token_mastery.update(enc.tokens)
+        self._update_familiarity_trace(familiarity)
 
         # Temperature gradually adapts based on lexical novelty.
         base = getattr(self.system, "replay_temp", 1.0)
@@ -338,6 +349,23 @@ class BookAdapter:
             self.system.hard_gate_countdown = 3
         elif self.system.hard_gate_countdown > 0:
             self.system.hard_gate_countdown -= 1
+
+    def _sentence_familiarity(self, tokens: Sequence[str]) -> float:
+        if not tokens:
+            return 0.0
+        mastery = sum(self._token_mastery.get(tok, 0) for tok in tokens) / len(tokens)
+        return 1.0 - math.exp(-mastery / 3.0)
+
+    def _update_familiarity_trace(self, familiarity: float) -> None:
+        baseline = getattr(self.system, "average_familiarity", 0.0)
+        updated = baseline * 0.9 + familiarity * 0.1
+        self.system.average_familiarity = max(0.0, min(1.0, updated))
+
+    def _engram_saliency(self) -> float:
+        coherence = self.cortex.coherence_score()
+        familiarity = getattr(self.system, "average_familiarity", 0.0)
+        combined = 0.5 * coherence + 0.5 * familiarity
+        return max(0.05, min(1.0, combined))
 
     def compress_chapter(self, chapter_idx: int) -> None:
         # Slightly decay replay temperature after a chapter to mimic consolidation.
