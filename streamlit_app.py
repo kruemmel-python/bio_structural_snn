@@ -8,6 +8,14 @@ from typing import Dict, List
 import pandas as pd
 import streamlit as st
 
+
+def _rerun() -> None:
+    """Kompatibler Re-Run-Aufruf für verschiedene Streamlit-Versionen."""
+
+    rerun = getattr(st, "experimental_rerun", None) or getattr(st, "rerun", None)
+    if rerun is not None:
+        rerun()
+
 import bio_hippocampal_snn_ctx_theta_cmp_feedback_ctxlearn_hardgate as hippo
 from book_ingestion_vsa_adapter_plus_cli import (
     DEMO_TEXT,
@@ -66,12 +74,13 @@ def _create_adapter(metric_queue: queue.Queue) -> InstrumentedBookAdapter:
 def _start_training(text: str, chapter_size: int, para_size: int) -> None:
     state = st.session_state
     state.metrics_history = []
-    state.metrics_queue = queue.Queue()
-    state.status_queue = queue.Queue()
-    adapter = _create_adapter(state.metrics_queue)
+    metrics_queue: queue.Queue = queue.Queue()
+    status_queue: queue.Queue = queue.Queue()
+    state.metrics_queue = metrics_queue
+    state.status_queue = status_queue
+    adapter = _create_adapter(metrics_queue)
 
     def _worker() -> None:
-        status_queue = state.status_queue
         status_queue.put({"type": "status", "value": "Training läuft..."})
         try:
             adapter.ingest_book(text, chapter_size_sents=chapter_size, para_size_sents=para_size)
@@ -128,7 +137,7 @@ def _render_book_input() -> None:
             if st.button("Demo-Text laden"):
                 state.book_text = DEMO_TEXT
                 state.book_text_area = DEMO_TEXT
-                st.experimental_rerun()
+                _rerun()
         text_value = st.text_area(
             "Buchinhalt (bearbeitbar)",
             value=state.book_text_area,
@@ -158,7 +167,7 @@ def _render_training_controls() -> None:
                 st.warning("Bitte einen Buchtext angeben.")
             else:
                 _start_training(state.book_text, int(chapter_size), int(para_size))
-                st.experimental_rerun()
+                _rerun()
         if st.button("🔄 System neu initialisieren", disabled=state.training_running):
             state.book_text_area = state.book_text
             state.metrics_history = []
@@ -279,7 +288,7 @@ def main() -> None:
     _render_interactions()
     if st.session_state.training_running:
         time.sleep(REFRESH_DELAY_SEC)
-        st.experimental_rerun()
+        _rerun()
 
 
 if __name__ == "__main__":
