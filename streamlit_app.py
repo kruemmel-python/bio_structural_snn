@@ -62,6 +62,17 @@ def _session_is_active() -> bool:
         # Fallback: lieber Re-Runs zulassen als Live-Updates zu verlieren.
         return True
 
+
+def _clear_widget(key: str) -> None:
+    """Entfernt einen Widget-State-Schlüssel, ohne ihn erneut zu setzen."""
+
+    state = st.session_state
+    if key in state:
+        try:
+            del state[key]
+        except KeyError:
+            pass
+
 import bio_hippocampal_snn_ctx_theta_cmp_feedback_ctxlearn_hardgate as hippo
 from book_ingestion_vsa_adapter_plus_cli import (
     DEMO_TEXT,
@@ -335,7 +346,7 @@ def _render_persistence() -> None:
                 digest = hashlib.sha256(data).hexdigest()
                 if digest == state.last_loaded_brain_digest:
                     st.info("Dieses Gehirn ist bereits geladen.")
-                    state.brain_upload = None
+                    _clear_widget("brain_upload")
                     _rerun()
                 else:
                     try:
@@ -355,7 +366,7 @@ def _render_persistence() -> None:
                     except Exception as exc:
                         st.error(f"Laden fehlgeschlagen: {exc}")
                     finally:
-                        state.brain_upload = None
+                        _clear_widget("brain_upload")
                         _rerun()
 
 
