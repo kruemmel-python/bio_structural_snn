@@ -107,13 +107,32 @@ if st.button("Lernphase starten", disabled=not text):
     else:
         total_paragraphs = sum(len(chapter) for chapter in chapters)
         progress = st.progress(0)
+        status_placeholder = st.empty()
+        detail_placeholder = st.empty()
         progress_state = {"count": 0}
         new_events: List[LearningEvent] = []
 
         def _progress_cb(event: LearningEvent) -> None:
             progress_state["count"] += 1
             new_events.append(event)
-            progress.progress(min(1.0, progress_state["count"] / max(1, total_paragraphs)))
+            ratio = progress_state["count"] / max(1, total_paragraphs)
+            progress.progress(min(1.0, ratio))
+            status_placeholder.info(
+                f"Kapitel {event.chapter_index + 1}, Absatz {event.paragraph_index + 1} "
+                f"– Reward {event.reward:.3f}, Kohärenz {event.coherence:.3f}, Replay-Temp {event.replay_temp:.2f}"
+            )
+            sentences_preview = " | ".join(sent.text for sent in event.sentences[:3])
+            detail_placeholder.markdown(
+                "\n".join(
+                    [
+                        "**Aktueller Lernschritt**",
+                        f"• Kontextneuronen: {len(event.ctx_ids)} | DG-Größe: {event.engram_size}",
+                        f"• CA3 aktiv: {event.ca3_active} | CA1 aktiv: {event.ca1_active} | Hard-Gate: {'Ja' if event.hard_gate_active else 'Nein'}",
+                        f"• CA1-Mismatch: {event.avg_ca1_mismatch:.4f} | Plastizität CA3/CA1: {event.ca3_feedback_gate:.3f} / {event.ca1_feedback_gate:.3f}",
+                        f"• Beispielssätze: {sentences_preview if sentences_preview else '—'}",
+                    ]
+                )
+            )
 
         with st.spinner("Lernen läuft…"):
             adapter.ingest_book(
@@ -122,6 +141,8 @@ if st.button("Lernphase starten", disabled=not text):
                 para_size_sents=int(para_size),
                 progress_cb=_progress_cb,
             )
+        status_placeholder.success("Lernen abgeschlossen.")
+        detail_placeholder.empty()
         st.session_state.learning_log.extend(new_events)
         st.session_state.books.append(
             {
