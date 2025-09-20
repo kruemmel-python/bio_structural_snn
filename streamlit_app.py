@@ -1,5 +1,6 @@
 """Streamlit-UI für den bio-inspirierten Buch-Adapter."""
 from __future__ import annotations
+import hashlib
 import queue
 import threading
 import time
@@ -54,6 +55,8 @@ def _ensure_state() -> None:
         state.book_text = ""
     if "book_text_area" not in state:
         state.book_text_area = state.book_text
+    if "last_loaded_brain_digest" not in state:
+        state.last_loaded_brain_digest = None
 
 
 def _create_adapter(metric_queue: queue.Queue) -> InstrumentedBookAdapter:
@@ -280,26 +283,35 @@ def _render_persistence() -> None:
             key="brain_upload",
         )
         if uploaded is not None:
-            data = uploaded.read()
+            data = uploaded.getvalue()
             if not data:
                 st.warning("Leere Datei hochgeladen.")
             else:
-                try:
-                    metrics_queue: queue.Queue = queue.Queue()
-                    state.metrics_queue = metrics_queue
-                    status_queue: queue.Queue = queue.Queue()
-                    state.status_queue = status_queue
-                    adapter = _create_adapter(metrics_queue)
-                    adapter.import_brain_state(data)
-                    state.hippo_system = adapter.system
-                    state.metrics_history = adapter.metrics.as_dicts()
-                    state.training_status = "Gehirn geladen"
-                    state.training_error = ""
-                    state.training_running = False
-                    st.success("Gehirn erfolgreich geladen.")
+                digest = hashlib.sha256(data).hexdigest()
+                if digest == state.last_loaded_brain_digest:
+                    st.info("Dieses Gehirn ist bereits geladen.")
+                    state.brain_upload = None
                     _rerun()
-                except Exception as exc:
-                    st.error(f"Laden fehlgeschlagen: {exc}")
+                else:
+                    try:
+                        metrics_queue: queue.Queue = queue.Queue()
+                        state.metrics_queue = metrics_queue
+                        status_queue: queue.Queue = queue.Queue()
+                        state.status_queue = status_queue
+                        adapter = _create_adapter(metrics_queue)
+                        adapter.import_brain_state(data)
+                        state.hippo_system = adapter.system
+                        state.metrics_history = adapter.metrics.as_dicts()
+                        state.training_status = "Gehirn geladen"
+                        state.training_error = ""
+                        state.training_running = False
+                        state.last_loaded_brain_digest = digest
+                        st.success("Gehirn erfolgreich geladen.")
+                    except Exception as exc:
+                        st.error(f"Laden fehlgeschlagen: {exc}")
+                    finally:
+                        state.brain_upload = None
+                        _rerun()
 
 
 def _render_interactions() -> None:
