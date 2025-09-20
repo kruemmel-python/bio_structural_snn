@@ -18,7 +18,7 @@ from typing import List, Dict, Tuple, Optional, Any, Iterable
 # -- ggf. anpassen: Modulnamen deines Hippocampus-Stacks und (optional) des Adapters
 import bio_hippocampal_snn_ctx_theta_cmp_feedback_ctxlearn_hardgate as hippo
 try:
-    import book_ingestion_vsa_adapter_plus as adapter_plus
+    import book_ingestion_vsa_adapter_plus_cli as adapter_plus
 except Exception:
     adapter_plus = None
 
