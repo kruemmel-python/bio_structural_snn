@@ -32,7 +32,7 @@ import random
 import re
 import time
 from collections import Counter
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 TOKEN_RE = re.compile(r"[\w-]+", re.UNICODE)
 
@@ -126,6 +126,8 @@ class BookAdapter:
         self._paragraphs: List[Paragraph] = []
         self._last_tokens: Counter[str] = Counter()
         self._rng = random.Random(1234)
+        self._chapter_titles: Dict[int, str] = {}
+        self._paragraph_lookup: Dict[str, Paragraph] = {}
 
         # Ensure the downstream instrumentation always finds the expected fields
         _ensure_attr(self.system, "ca1_last_mismatch", [0.0])
@@ -144,9 +146,18 @@ class BookAdapter:
         chapters = _chunk(sentences, chapter_size_sents)
         timestamp = time.time()
         self._paragraphs = []
+        self._paragraph_lookup = {}
+        self._chapter_titles = {}
         self.system.engrams.clear()
 
         for ch_idx, chapter in enumerate(chapters):
+            chapter_title = chapter[0] if chapter else ""
+            chapter_title = chapter_title.strip()
+            if chapter_title:
+                preview = chapter_title[:80]
+                self._chapter_titles[ch_idx] = f"Kapitel {ch_idx + 1}: {preview}"
+            else:
+                self._chapter_titles[ch_idx] = f"Kapitel {ch_idx + 1}"
             paragraphs = _chunk(chapter, para_size_sents)
             for para_idx, para_sentences in enumerate(paragraphs):
                 tag = f"chap{ch_idx:02d}_para{para_idx:02d}"
@@ -172,6 +183,7 @@ class BookAdapter:
                     token_counts=paragraph_counter,
                 )
                 self._paragraphs.append(paragraph)
+                self._paragraph_lookup[tag] = paragraph
                 self.system.engrams.append(
                     {
                         "ids": list(range(len(encoded_sentences))),
@@ -198,6 +210,26 @@ class BookAdapter:
                 scored.append((para.tag, score))
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:topk]
+
+    def get_paragraph_metadata(self, tag: str) -> Optional[Dict[str, object]]:
+        """Return descriptive metadata for a stored paragraph tag."""
+
+        paragraph = self._paragraph_lookup.get(tag)
+        if not paragraph:
+            return None
+        chapter_label = self._chapter_titles.get(
+            paragraph.chapter_idx, f"Kapitel {paragraph.chapter_idx + 1}"
+        )
+        preview = paragraph.text.strip()
+        if len(preview) > 240:
+            preview = preview[:237].rstrip() + "…"
+        return {
+            "tag": paragraph.tag,
+            "chapter_index": paragraph.chapter_idx,
+            "chapter_label": chapter_label,
+            "paragraph_index": paragraph.paragraph_idx,
+            "text": preview,
+        }
 
     def ask_relation(self, subj: str, verb: str, obj: str) -> Tuple[int, int, float]:
         subj_l = _normalise_word(subj)

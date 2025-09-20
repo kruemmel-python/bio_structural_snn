@@ -238,7 +238,12 @@ def _render_interactions() -> None:
                         st.warning("Keine Ergebnisse.")
                     else:
                         for tag, sim in res:
-                            st.write(f"{tag}: Ähnlichkeit {sim:.3f}")
+                            meta = adapter.get_paragraph_metadata(tag) if adapter else None
+                            if meta:
+                                st.write(f"{meta['chapter_label']} – {tag}: Ähnlichkeit {sim:.3f}")
+                                st.caption(meta["text"])
+                            else:
+                                st.write(f"{tag}: Ähnlichkeit {sim:.3f}")
                         state.interaction_logs.append(f"nearest('{query}') -> {len(res)} Treffer")
         with st.form("relation_form", clear_on_submit=False):
             st.subheader("Relation abfragen")
