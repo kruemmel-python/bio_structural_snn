@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import os
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+from typing import Callable, Dict, List, Tuple, Optional
 
 # >>> ggf. anpassen: Import deines Hippocampus-Stacks und Adapters (Plus)
 import bio_hippocampal_snn_ctx_theta_cmp_feedback_ctxlearn_hardgate as hippo
@@ -103,6 +104,22 @@ class MetricsLogger:
                 w.writerow([self.steps[i], f"{self.coherence[i]:.6f}", f"{self.mismatch[i]:.6f}",
                             self.engrams[i], f"{self.replay_T[i]:.6f}", self.hardgate[i]])
 
+    def to_csv_text(self) -> str:
+        """Liefert identische CSV-Daten als String (für Downloads)."""
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["step","coherence","mismatch","engrams","replay_temp","hard_gate"])
+        for i in range(len(self.steps)):
+            w.writerow([
+                self.steps[i],
+                f"{self.coherence[i]:.6f}",
+                f"{self.mismatch[i]:.6f}",
+                self.engrams[i],
+                f"{self.replay_T[i]:.6f}",
+                self.hardgate[i],
+            ])
+        return buf.getvalue()
+
 # ==============================
 # 2) Instrumentierter Adapter (wrappt den „Plus“-Adapter)
 # ==============================
@@ -112,6 +129,17 @@ class InstrumentedBookAdapter(adapter_plus.BookAdapter):
         super().__init__(*args, **kwargs)
         self.metrics = MetricsLogger()
         self._step_counter = 0
+        self._metric_callbacks: List[Callable[[Dict[str, float]], None]] = []
+
+    def add_metric_callback(self, cb: Callable[[Dict[str, float]], None]) -> None:
+        """Registriere Callback, der bei jedem Log ein Snapshot-Dikt erhält."""
+        if cb is None:
+            return
+        self._metric_callbacks.append(cb)
+
+    def clear_metric_callbacks(self) -> None:
+        """Entferne alle registrierten Callbacks (z. B. beim Reset)."""
+        self._metric_callbacks.clear()
 
     def _log_now(self):
         # aktuelle Werte holen
@@ -121,6 +149,21 @@ class InstrumentedBookAdapter(adapter_plus.BookAdapter):
         temp = self.system.replay_temp
         hg = self.system.hard_gate_countdown
         self.metrics.log(self._step_counter, coh, mis, eng, temp, hg)
+        if self._metric_callbacks:
+            payload = {
+                "step": self.metrics.steps[-1],
+                "coherence": self.metrics.coherence[-1],
+                "mismatch": self.metrics.mismatch[-1],
+                "engrams": self.metrics.engrams[-1],
+                "replay_temp": self.metrics.replay_T[-1],
+                "hard_gate": self.metrics.hardgate[-1],
+            }
+            for cb in list(self._metric_callbacks):
+                try:
+                    cb(payload)
+                except Exception:
+                    # externe Konsumenten sollen das Logging nicht blockieren
+                    pass
 
     # Override: kleine Hooks an sinnvollen Stellen
     def _stimulate_sentence(self, enc: adapter_plus.EncodedSentence, ctx_ids: List[int], ticks_after: int = 6) -> None:
