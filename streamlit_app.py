@@ -71,19 +71,39 @@ def _create_adapter(metric_queue: queue.Queue) -> InstrumentedBookAdapter:
     return adapter
 
 
-def _start_training(text: str, chapter_size: int, para_size: int) -> None:
+def _attach_adapter(adapter: InstrumentedBookAdapter, metric_queue: queue.Queue) -> None:
+    adapter.clear_metric_callbacks()
+
+    def _emit(snapshot: Dict[str, float]) -> None:
+        metric_queue.put(snapshot)
+
+    adapter.add_metric_callback(_emit)
+    st.session_state.hippo_system = adapter.system
+    st.session_state.adapter = adapter
+
+
+def _start_training(text: str, chapter_size: int, para_size: int, append: bool = False) -> None:
     state = st.session_state
-    state.metrics_history = []
     metrics_queue: queue.Queue = queue.Queue()
     status_queue: queue.Queue = queue.Queue()
     state.metrics_queue = metrics_queue
     state.status_queue = status_queue
-    adapter = _create_adapter(metrics_queue)
+    if append and isinstance(state.adapter, InstrumentedBookAdapter):
+        adapter = state.adapter
+        _attach_adapter(adapter, metrics_queue)
+    else:
+        state.metrics_history = []
+        adapter = _create_adapter(metrics_queue)
 
     def _worker() -> None:
         status_queue.put({"type": "status", "value": "Training läuft..."})
         try:
-            adapter.ingest_book(text, chapter_size_sents=chapter_size, para_size_sents=para_size)
+            adapter.ingest_book(
+                text,
+                chapter_size_sents=chapter_size,
+                para_size_sents=para_size,
+                reset_state=not append,
+            )
             status_queue.put({"type": "status", "value": "Training abgeschlossen"})
         except Exception as exc:  # pragma: no cover - nur zur Anzeige in der UI
             status_queue.put({"type": "error", "value": str(exc)})
@@ -161,12 +181,18 @@ def _render_training_controls() -> None:
             st.info(state.training_status)
             if state.training_error:
                 st.error(f"Fehler: {state.training_error}")
+        append_training = st.checkbox(
+            "An bestehendes Wissen anfügen",
+            value=False,
+            disabled=state.adapter is None,
+            help="Führt ein weiteres Buch mit dem aktuellen Gehirn zusammen statt neu zu initialisieren.",
+        )
         start_disabled = state.training_running
         if st.button("🚀 Training starten", disabled=start_disabled):
             if not state.book_text.strip():
                 st.warning("Bitte einen Buchtext angeben.")
             else:
-                _start_training(state.book_text, int(chapter_size), int(para_size))
+                _start_training(state.book_text, int(chapter_size), int(para_size), append=append_training)
                 _rerun()
         if st.button("🔄 System neu initialisieren", disabled=state.training_running):
             state.book_text_area = state.book_text
@@ -213,6 +239,57 @@ def _render_metrics() -> None:
             )
         if adapter and adapter.system:
             st.write(f"Gespeicherte Engramme im System: {len(adapter.system.engrams)}")
+
+
+def _render_persistence() -> None:
+    state = st.session_state
+    adapter: InstrumentedBookAdapter | None = state.adapter
+    with st.expander("💾 Gehirn speichern & laden", expanded=True):
+        st.subheader("Aktuellen Zustand sichern")
+        if adapter:
+            try:
+                brain_bytes = adapter.export_brain_state()
+            except Exception as exc:  # pragma: no cover - Schutz vor Serialisierungsfehlern
+                st.error(f"Export fehlgeschlagen: {exc}")
+                brain_bytes = None
+            if brain_bytes:
+                st.download_button(
+                    "🧠 Gehirn herunterladen",
+                    data=brain_bytes,
+                    file_name="hippocampus_brain.pkl",
+                    mime="application/octet-stream",
+                )
+            st.caption("Enthält Hippocampus-Zustand, Engramme, Metriken und Kapitelinformationen.")
+        else:
+            st.info("Noch kein trainiertes Gehirn vorhanden.")
+
+        st.subheader("Gespeichertes Gehirn laden")
+        uploaded = st.file_uploader(
+            "Gehirn-Datei auswählen",
+            type=["pkl", "brain", "bin"],
+            key="brain_upload",
+        )
+        if uploaded is not None:
+            data = uploaded.read()
+            if not data:
+                st.warning("Leere Datei hochgeladen.")
+            else:
+                try:
+                    metrics_queue: queue.Queue = queue.Queue()
+                    state.metrics_queue = metrics_queue
+                    status_queue: queue.Queue = queue.Queue()
+                    state.status_queue = status_queue
+                    adapter = _create_adapter(metrics_queue)
+                    adapter.import_brain_state(data)
+                    state.hippo_system = adapter.system
+                    state.metrics_history = adapter.metrics.as_dicts()
+                    state.training_status = "Gehirn geladen"
+                    state.training_error = ""
+                    state.training_running = False
+                    st.success("Gehirn erfolgreich geladen.")
+                    _rerun()
+                except Exception as exc:
+                    st.error(f"Laden fehlgeschlagen: {exc}")
 
 
 def _render_interactions() -> None:
@@ -290,6 +367,7 @@ def main() -> None:
     _render_book_input()
     _render_training_controls()
     _render_metrics()
+    _render_persistence()
     _render_interactions()
     if st.session_state.training_running:
         time.sleep(REFRESH_DELAY_SEC)

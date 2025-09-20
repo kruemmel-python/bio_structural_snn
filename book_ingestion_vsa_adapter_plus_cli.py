@@ -13,6 +13,7 @@ import argparse
 import csv
 import io
 import os
+import pickle
 import sys
 import time
 from dataclasses import dataclass, field
@@ -120,6 +121,21 @@ class MetricsLogger:
             ])
         return buf.getvalue()
 
+    def as_dicts(self) -> List[Dict[str, float]]:
+        rows: List[Dict[str, float]] = []
+        for i in range(len(self.steps)):
+            rows.append(
+                {
+                    "step": self.steps[i],
+                    "coherence": self.coherence[i],
+                    "mismatch": self.mismatch[i],
+                    "engrams": self.engrams[i],
+                    "replay_temp": self.replay_T[i],
+                    "hard_gate": self.hardgate[i],
+                }
+            )
+        return rows
+
 # ==============================
 # 2) Instrumentierter Adapter (wrappt den „Plus“-Adapter)
 # ==============================
@@ -185,13 +201,42 @@ class InstrumentedBookAdapter(adapter_plus.BookAdapter):
             self._step_counter += 1
             self._log_now()
 
-    def ingest_book(self, text: str, chapter_size_sents: int = 40, para_size_sents: int = 6) -> None:
+    def ingest_book(
+        self,
+        text: str,
+        chapter_size_sents: int = 40,
+        para_size_sents: int = 6,
+        *,
+        reset_state: bool = True,
+    ) -> None:
         # Anfangslog
         self._log_now()
-        super().ingest_book(text, chapter_size_sents, para_size_sents)
+        super().ingest_book(text, chapter_size_sents, para_size_sents, reset_state=reset_state)
         # Abschlusslog
         self._step_counter += 1
         self._log_now()
+
+    def export_brain_state(self) -> bytes:
+        payload = self.export_state_dict()
+        payload["metrics"] = self.metrics
+        payload["step_counter"] = self._step_counter
+        return pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def import_brain_state(self, data: bytes) -> None:
+        payload = pickle.loads(data)
+        if not isinstance(payload, dict):
+            raise ValueError("Ungültiges Gehirnformat: Erwartet Wörterbuch.")
+        metrics = payload.pop("metrics", None)
+        step_counter = payload.pop("step_counter", 0)
+        super().import_state_dict(payload)
+        if isinstance(metrics, MetricsLogger):
+            self.metrics = metrics
+        else:
+            self.metrics = MetricsLogger()
+        self._step_counter = int(step_counter) if step_counter is not None else 0
+        # Falls importierte Metriken leer sind, aktuellen Zustand loggen, damit UI Werte hat.
+        if not self.metrics.steps:
+            self._log_now()
 
 # ==============================
 # 3) CLI

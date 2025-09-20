@@ -28,11 +28,12 @@ remaining dependency free and easy to reason about.
 
 from dataclasses import dataclass, field
 import math
+import pickle
 import random
 import re
 import time
 from collections import Counter
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 TOKEN_RE = re.compile(r"[\w-]+", re.UNICODE)
 
@@ -138,29 +139,52 @@ class BookAdapter:
     # ------------------------------------------------------------------
     # High level ingestion API
     # ------------------------------------------------------------------
-    def ingest_book(self, text: str, chapter_size_sents: int = 40, para_size_sents: int = 6) -> None:
+    def ingest_book(
+        self,
+        text: str,
+        chapter_size_sents: int = 40,
+        para_size_sents: int = 6,
+        *,
+        reset_state: bool = True,
+    ) -> None:
         sentences = [s.strip() for s in re.split(r"[\n\.\?!]+", text) if s.strip()]
         if not sentences:
             return
 
         chapters = _chunk(sentences, chapter_size_sents)
-        timestamp = time.time()
-        self._paragraphs = []
-        self._paragraph_lookup = {}
-        self._chapter_titles = {}
-        self.system.engrams.clear()
+        if reset_state:
+            timestamp = time.time()
+            self._paragraphs = []
+            self._paragraph_lookup = {}
+            self._chapter_titles = {}
+            self.system.engrams.clear()
+            self.cortex = SimpleCortex()
+            self._last_tokens = Counter()
+            base_chapter_idx = 0
+        else:
+            last_ts = (
+                max((eng.get("ts", 0.0) for eng in getattr(self.system, "engrams", [])), default=0.0)
+                if getattr(self.system, "engrams", None)
+                else 0.0
+            )
+            timestamp = max(time.time(), last_ts + 1.0)
+            if self._chapter_titles:
+                base_chapter_idx = max(self._chapter_titles.keys()) + 1
+            else:
+                base_chapter_idx = 0
 
         for ch_idx, chapter in enumerate(chapters):
+            global_ch_idx = base_chapter_idx + ch_idx
             chapter_title = chapter[0] if chapter else ""
             chapter_title = chapter_title.strip()
             if chapter_title:
                 preview = chapter_title[:80]
-                self._chapter_titles[ch_idx] = f"Kapitel {ch_idx + 1}: {preview}"
+                self._chapter_titles[global_ch_idx] = f"Kapitel {global_ch_idx + 1}: {preview}"
             else:
-                self._chapter_titles[ch_idx] = f"Kapitel {ch_idx + 1}"
+                self._chapter_titles[global_ch_idx] = f"Kapitel {global_ch_idx + 1}"
             paragraphs = _chunk(chapter, para_size_sents)
             for para_idx, para_sentences in enumerate(paragraphs):
-                tag = f"chap{ch_idx:02d}_para{para_idx:02d}"
+                tag = f"chap{global_ch_idx:02d}_para{para_idx:02d}"
                 encoded_sentences: List[EncodedSentence] = []
                 for sentence in para_sentences:
                     tokens = _sentence_tokens(sentence)
@@ -193,8 +217,48 @@ class BookAdapter:
                     }
                 )
                 timestamp += 1.0
-            self.compress_chapter(ch_idx)
-            self.monitor_and_intervene(ch_idx)
+            self.compress_chapter(global_ch_idx)
+            self.monitor_and_intervene(global_ch_idx)
+
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+    def _rebuild_lookup(self) -> None:
+        self._paragraph_lookup = {para.tag: para for para in self._paragraphs}
+
+    def export_state_dict(self) -> Dict[str, Any]:
+        return {
+            "system": self.system,
+            "cortex": self.cortex,
+            "paragraphs": self._paragraphs,
+            "chapter_titles": self._chapter_titles,
+            "last_tokens": self._last_tokens,
+            "rng_state": self._rng.getstate(),
+        }
+
+    def import_state_dict(self, payload: Dict[str, Any]) -> None:
+        self.system = payload.get("system", self.system)
+        self.cortex = payload.get("cortex", SimpleCortex())
+        self._paragraphs = payload.get("paragraphs", [])
+        self._chapter_titles = payload.get("chapter_titles", {})
+        self._last_tokens = payload.get("last_tokens", Counter())
+        rng_state = payload.get("rng_state")
+        if rng_state is not None:
+            self._rng.setstate(rng_state)
+        self._rebuild_lookup()
+        _ensure_attr(self.system, "ca1_last_mismatch", [0.0])
+        _ensure_attr(self.system, "engrams", [])
+        _ensure_attr(self.system, "replay_temp", 1.0)
+        _ensure_attr(self.system, "hard_gate_countdown", 0)
+
+    def export_state_bytes(self) -> bytes:
+        return pickle.dumps(self.export_state_dict(), protocol=pickle.HIGHEST_PROTOCOL)
+
+    def import_state_bytes(self, data: bytes) -> None:
+        payload = pickle.loads(data)
+        if not isinstance(payload, dict):
+            raise ValueError("Ungültiges Gehirnformat: Erwartet Wörterbuch.")
+        self.import_state_dict(payload)
 
     # ------------------------------------------------------------------
     # Interactive helpers mirroring the original adapter
