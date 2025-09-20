@@ -106,11 +106,21 @@ if st.button("Lernphase starten", disabled=not text):
         st.warning("Die Datei enthält keinen Text.")
     else:
         total_paragraphs = sum(len(chapter) for chapter in chapters)
-        progress = st.progress(0)
-        status_placeholder = st.empty()
-        detail_placeholder = st.empty()
+        live_container = st.container()
+        with live_container:
+            st.subheader("Live-Lernmonitoring")
+            progress = st.progress(0)
+            status_placeholder = st.empty()
+            live_metric_cols = st.columns(3)
+            reward_metric = live_metric_cols[0].empty()
+            replay_metric = live_metric_cols[1].empty()
+            mismatch_metric = live_metric_cols[2].empty()
+            detail_placeholder = st.empty()
+            samples_placeholder = st.empty()
+            stream_placeholder = st.empty()
         progress_state = {"count": 0}
         new_events: List[LearningEvent] = []
+        live_log: List[str] = []
 
         def _progress_cb(event: LearningEvent) -> None:
             progress_state["count"] += 1
@@ -118,8 +128,25 @@ if st.button("Lernphase starten", disabled=not text):
             ratio = progress_state["count"] / max(1, total_paragraphs)
             progress.progress(min(1.0, ratio))
             status_placeholder.info(
-                f"Kapitel {event.chapter_index + 1}, Absatz {event.paragraph_index + 1} "
-                f"– Reward {event.reward:.3f}, Kohärenz {event.coherence:.3f}, Replay-Temp {event.replay_temp:.2f}"
+                f"Kapitel {event.chapter_index + 1}, Absatz {event.paragraph_index + 1} – "
+                f"Reward {event.reward:.3f}, Kohärenz {event.coherence:.3f}"
+            )
+            reward_metric.metric(
+                "Reward / Kohärenz",
+                f"{event.reward:.3f}",
+                delta=f"Kohärenz {event.coherence:.3f}",
+            )
+            replay_metric.metric(
+                "Netzaktivität",
+                f"Replay-Temp {event.replay_temp:.2f}",
+                delta=f"CA3 {event.ca3_active} | CA1 {event.ca1_active}",
+            )
+            mismatch_metric.metric(
+                "Mismatch & Gates",
+                f"ΔCA1 {event.avg_ca1_mismatch:.4f}",
+                delta=(
+                    f"Plastizität CA3/CA1 {event.ca3_feedback_gate:.3f} / {event.ca1_feedback_gate:.3f}"
+                ),
             )
             sentences_preview = " | ".join(sent.text for sent in event.sentences[:3])
             detail_placeholder.markdown(
@@ -127,11 +154,29 @@ if st.button("Lernphase starten", disabled=not text):
                     [
                         "**Aktueller Lernschritt**",
                         f"• Kontextneuronen: {len(event.ctx_ids)} | DG-Größe: {event.engram_size}",
-                        f"• CA3 aktiv: {event.ca3_active} | CA1 aktiv: {event.ca1_active} | Hard-Gate: {'Ja' if event.hard_gate_active else 'Nein'}",
-                        f"• CA1-Mismatch: {event.avg_ca1_mismatch:.4f} | Plastizität CA3/CA1: {event.ca3_feedback_gate:.3f} / {event.ca1_feedback_gate:.3f}",
-                        f"• Beispielssätze: {sentences_preview if sentences_preview else '—'}",
+                        f"• Hard-Gate: {'Ja' if event.hard_gate_active else 'Nein'} | Engramme gesamt: {event.engrams_total}",
                     ]
                 )
+            )
+            samples_placeholder.caption(
+                "Beispiele aus dem aktuellen Absatz: "
+                f"{sentences_preview if sentences_preview else '—'}"
+            )
+            live_log.append(
+                " • ".join(
+                    [
+                        f"Kap. {event.chapter_index + 1} / Abs. {event.paragraph_index + 1}",
+                        f"Reward {event.reward:.3f}",
+                        f"Kohärenz {event.coherence:.3f}",
+                        f"Replay {event.replay_temp:.2f}",
+                        f"CA3 {event.ca3_active} | CA1 {event.ca1_active}",
+                        f"Hard-Gate {'ON' if event.hard_gate_active else 'OFF'}",
+                    ]
+                )
+            )
+            stream_placeholder.markdown(
+                "\n".join(f"• {entry}" for entry in live_log[-8:]),
+                unsafe_allow_html=False,
             )
 
         with st.spinner("Lernen läuft…"):
@@ -142,7 +187,9 @@ if st.button("Lernphase starten", disabled=not text):
                 progress_cb=_progress_cb,
             )
         status_placeholder.success("Lernen abgeschlossen.")
-        detail_placeholder.empty()
+        detail_placeholder.markdown(
+            "**Lernphase abgeschlossen** – Live-Protokoll bleibt unten zur Einsicht erhalten."
+        )
         st.session_state.learning_log.extend(new_events)
         st.session_state.books.append(
             {
