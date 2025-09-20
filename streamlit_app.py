@@ -9,13 +9,58 @@ from typing import Dict, List
 import pandas as pd
 import streamlit as st
 
+try:  # pragma: no cover - optional dependency für Laufzeitprüfung
+    from streamlit.runtime.runtime import Runtime
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+except Exception:  # pragma: no cover - ältere Streamlit-Versionen
+    Runtime = None  # type: ignore[assignment]
+    get_script_run_ctx = None  # type: ignore[assignment]
+
 
 def _rerun() -> None:
     """Kompatibler Re-Run-Aufruf für verschiedene Streamlit-Versionen."""
 
+    if not _session_is_active():
+        return
+
     rerun = getattr(st, "experimental_rerun", None) or getattr(st, "rerun", None)
-    if rerun is not None:
+    if rerun is None:
+        return
+
+    try:
         rerun()
+    except RuntimeError:
+        # Tritt u. a. auf, wenn Streamlit während eines Shutdowns keinen Re-Run mehr zulässt.
+        pass
+    except Exception as exc:  # pragma: no cover - Schutz vor WebSocket-Abbrüchen
+        if exc.__class__.__name__ == "WebSocketClosedError":
+            # Frontend ist bereits getrennt – weitere Re-Runs würden erneut scheitern.
+            pass
+        else:
+            raise
+
+
+def _session_is_active() -> bool:
+    """Prüft, ob noch eine aktive Streamlit-Sitzung existiert."""
+
+    if Runtime is None or get_script_run_ctx is None:
+        # Alte Versionen ohne Runtime-API – wir behalten das bisherige Verhalten bei.
+        return True
+
+    try:
+        if not Runtime.exists():
+            return False
+        ctx = get_script_run_ctx()
+        if ctx is None or getattr(ctx, "session_id", None) is None:
+            return False
+        runtime = Runtime.instance()
+        return runtime.is_active_session(ctx.session_id)
+    except RuntimeError:
+        # Runtime.instance() wirft, wenn sie bereits gestoppt wurde.
+        return False
+    except Exception:
+        # Fallback: lieber Re-Runs zulassen als Live-Updates zu verlieren.
+        return True
 
 import bio_hippocampal_snn_ctx_theta_cmp_feedback_ctxlearn_hardgate as hippo
 from book_ingestion_vsa_adapter_plus_cli import (
