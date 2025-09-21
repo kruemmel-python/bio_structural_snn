@@ -106,6 +106,8 @@ class Trainer:
     replay_after_n_items: int = 6         # Batchgröße für Schlaf-/Replay-Block
     ctx_jitter_strength: int = 2          # kleine Kontextvariation
     max_steps: int = 50_000               # Schutz, falls jemand unendliche Epochen setzt
+    log_every_steps: int = 25             # reduziert UI-Last bei langen Sessions
+    max_log_entries: int = 5_000          # Obergrenze für gespeicherte Snapshots
     log: List[Dict[str, float]] = field(default_factory=list)
 
     # ---- Hilfen (Metriken/Stimuli) ----
@@ -118,7 +120,14 @@ class Trainer:
         fam = getattr(self.adapter.system, "average_familiarity", 0.0)
         return coh, mis, eng, temp, hg, fam
 
-    def _log_now(self, step: int) -> None:
+    def _log_now(self, step: int, *, force: bool = False) -> None:
+        if not force and self.log:
+            last_step = self.log[-1]["step"]
+            if step >= last_step:
+                if step - last_step < self.log_every_steps:
+                    return
+            # Wenn Schrittzahl kleiner ist (z. B. Epoche zurückgesetzt), loggen wir trotzdem.
+
         coh, mis, eng, temp, hg, fam = self._metrics()
         self.log.append({
             "step": float(step),
@@ -129,6 +138,9 @@ class Trainer:
             "hard_gate": float(hg),
             "familiarity": float(fam),
         })
+        if len(self.log) > self.max_log_entries:
+            overflow = len(self.log) - self.max_log_entries
+            del self.log[:overflow]
 
     def _paragraphs(self) -> List[Tuple[str, int, int]]:
         """

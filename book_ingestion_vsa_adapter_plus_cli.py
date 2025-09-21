@@ -24,6 +24,8 @@ import bio_hippocampal_snn_ctx_theta_cmp_feedback_ctxlearn_hardgate as hippo
 import book_ingestion_vsa_adapter_plus as adapter_plus  # die vorherige Datei aus meiner letzten Antwort
 from spaced_repetition_trainer import Trainer
 
+MAX_METRIC_POINTS = 5_000
+
 # ==============================
 # 1) ASCII-Plot & Metrik-Logger
 # ==============================
@@ -99,6 +101,17 @@ class MetricsLogger:
         self.replay_T.append(temp)
         self.hardgate.append(hg)
         self.familiarity.append(fam)
+        self.trim(MAX_METRIC_POINTS)
+
+    def trim(self, max_points: int) -> None:
+        if max_points <= 0:
+            return
+        extra = len(self.steps) - max_points
+        if extra <= 0:
+            return
+        for field_name in ("steps", "coherence", "mismatch", "engrams", "replay_T", "hardgate", "familiarity"):
+            seq = getattr(self, field_name)
+            del seq[:extra]
 
     def to_csv(self, path: str) -> None:
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -249,8 +262,10 @@ class InstrumentedBookAdapter(adapter_plus.BookAdapter):
             if len(current) < len(self.metrics.steps):
                 current = list(current) + [0.0 for _ in range(len(self.metrics.steps) - len(current))]
             self.metrics.familiarity = current
+            self.metrics.trim(MAX_METRIC_POINTS)
         else:
             self.metrics = MetricsLogger()
+        self.metrics.trim(MAX_METRIC_POINTS)
         self._step_counter = int(step_counter) if step_counter is not None else 0
         # Falls importierte Metriken leer sind, aktuellen Zustand loggen, damit UI Werte hat.
         if not self.metrics.steps:
@@ -370,6 +385,7 @@ def run_cli(inst: InstrumentedBookAdapter) -> None:
                     inst.metrics.replay_T.append(float(row["replay_temp"]))
                     inst.metrics.hardgate.append(int(row["hard_gate"]))
                     inst.metrics.familiarity.append(float(row["familiarity"]))
+                inst.metrics.trim(MAX_METRIC_POINTS)
                 print(f"Wiederholung OK – Epochen={epochs}, Policy='{policy}'.")
             except Exception as e:
                 print(f"Fehler in repeat: {e}")

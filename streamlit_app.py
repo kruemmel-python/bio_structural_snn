@@ -84,6 +84,7 @@ from spaced_repetition_trainer import Trainer
 
 TRAINING_SEED = 404
 REFRESH_DELAY_SEC = 0.6
+MAX_HISTORY_POINTS = 5_000
 
 
 def _ensure_state() -> None:
@@ -129,6 +130,13 @@ def _create_adapter(metric_queue: queue.Queue) -> InstrumentedBookAdapter:
     st.session_state.hippo_system = system
     st.session_state.adapter = adapter
     return adapter
+
+
+def _trim_metrics_history() -> None:
+    history = st.session_state.metrics_history
+    excess = len(history) - MAX_HISTORY_POINTS
+    if excess > 0:
+        del history[:excess]
 
 
 def _attach_adapter(adapter: InstrumentedBookAdapter, metric_queue: queue.Queue) -> None:
@@ -183,6 +191,7 @@ def _drain_queues() -> None:
     metrics = state.metrics_queue
     while not metrics.empty():
         state.metrics_history.append(metrics.get())
+    _trim_metrics_history()
     status_queue = state.status_queue
     while not status_queue.empty():
         msg = status_queue.get()
@@ -359,6 +368,7 @@ def _render_persistence() -> None:
                         adapter.import_brain_state(data)
                         state.hippo_system = adapter.system
                         state.metrics_history = adapter.metrics.as_dicts()
+                        _trim_metrics_history()
                         state.training_status = "Gehirn geladen"
                         state.training_error = ""
                         state.training_running = False
@@ -442,6 +452,7 @@ def _render_interactions() -> None:
                 trainer = Trainer(adapter)
                 trainer.repeat(epochs=int(ep), policy=pol)
                 state.metrics_history.extend(trainer.log)
+                _trim_metrics_history()
             except Exception as exc:
                 st.error(f"Fehler beim Wiederholen: {exc}")
             else:
