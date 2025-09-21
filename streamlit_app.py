@@ -79,6 +79,7 @@ from book_ingestion_vsa_adapter_plus_cli import (
     InstrumentedBookAdapter,
     ascii_plot,
 )
+from spaced_repetition_trainer import Trainer
 
 
 TRAINING_SEED = 404
@@ -432,6 +433,19 @@ def _render_interactions() -> None:
                     state.interaction_logs.append(
                         f"replay(chapter={chapter_idx}, ids={ids})"
                     )
+        st.subheader("Wiederholen (Spaced Repetition)")
+        colr1, colr2, colr3 = st.columns(3)
+        ep = colr1.number_input("Epochen", min_value=1, value=3, step=1, disabled=disable_actions)
+        pol = colr2.selectbox("Policy", ["ebbinghaus", "fixed", "adaptive"], index=0, disabled=disable_actions)
+        if colr3.button("▶️ Wiederholen", disabled=disable_actions):
+            try:
+                trainer = Trainer(adapter)
+                trainer.repeat(epochs=int(ep), policy=pol)
+                state.metrics_history.extend(trainer.log)
+            except Exception as exc:
+                st.error(f"Fehler beim Wiederholen: {exc}")
+            else:
+                st.success(f"Wiederholung abgeschlossen: {ep}× ({pol}).")
         if state.interaction_logs:
             st.subheader("Aktionsprotokoll")
             st.write("\n".join(state.interaction_logs[-10:]))

@@ -22,6 +22,7 @@ from typing import Callable, Dict, List, Tuple, Optional
 # >>> ggf. anpassen: Import deines Hippocampus-Stacks und Adapters (Plus)
 import bio_hippocampal_snn_ctx_theta_cmp_feedback_ctxlearn_hardgate as hippo
 import book_ingestion_vsa_adapter_plus as adapter_plus  # die vorherige Datei aus meiner letzten Antwort
+from spaced_repetition_trainer import Trainer
 
 # ==============================
 # 1) ASCII-Plot & Metrik-Logger
@@ -267,6 +268,7 @@ Befehle:
   plot                           – ASCII-Plots (Kohärenz, Mismatch, Engramme, Replay-T, Hard-Gate)
   savecsv <pfad.csv>             – Metriken als CSV exportieren
   replay <kapitel> <p1,p2,...>   – gezieltes Replay für Absätze starten
+  repeat [epochen] [policy]      – echtes Wiederholen (Spacing) auslösen
   help                           – diese Hilfe
   exit                           – beenden
 """
@@ -352,6 +354,25 @@ def run_cli(inst: InstrumentedBookAdapter) -> None:
                 print("Gezieltes Replay ausgelöst.")
             except Exception as e:
                 print(f"Fehler: {e}")
+            continue
+        if line.startswith("repeat"):
+            parts = line.split()
+            epochs = int(parts[1]) if len(parts) >= 2 else 3
+            policy = parts[2] if len(parts) >= 3 else "ebbinghaus"
+            try:
+                trainer = Trainer(inst)
+                trainer.repeat(epochs=epochs, policy=policy)
+                for row in trainer.log:
+                    inst.metrics.steps.append(int(row["step"]))
+                    inst.metrics.coherence.append(float(row["coherence"]))
+                    inst.metrics.mismatch.append(float(row["mismatch"]))
+                    inst.metrics.engrams.append(int(row["engrams"]))
+                    inst.metrics.replay_T.append(float(row["replay_temp"]))
+                    inst.metrics.hardgate.append(int(row["hard_gate"]))
+                    inst.metrics.familiarity.append(float(row["familiarity"]))
+                print(f"Wiederholung OK – Epochen={epochs}, Policy='{policy}'.")
+            except Exception as e:
+                print(f"Fehler in repeat: {e}")
             continue
         print("Unbekannter Befehl. 'help' zeigt Hilfe.")
 
